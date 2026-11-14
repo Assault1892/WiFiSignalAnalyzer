@@ -1,5 +1,7 @@
 # WiFi Signal & Stability Analyzer
 
+> **Created with AI**: 本ツールは **Google Antigravity** 上で **Orchestrator (Argon)**（Google DeepMind Gemini モデル）を使用して作成されました。
+
 接続中のWi-Fiアクセスポイントについて、以下の4つの観点から信号品質・回線安定性・速度・安全性を総合診断し、用途別の適性（`◎ 最適` / `○ 快適` / `△ 注意` / `× 不向き`）を判定するクロスプラットフォームGUIツールです。
 
 外部の `pip` パッケージを必要とせず、Python標準ライブラリのみで動作します（macOS / Windows / Linux 対応）。
