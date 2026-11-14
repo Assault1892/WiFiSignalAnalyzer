@@ -313,16 +313,20 @@ def evaluate_use_cases(
     jitter = ping.avg_jitter_ms or 0.0
     loss = ping.total_loss_pct
     speed_unmeasured = speed.skipped
+    ping_unmeasured = len(ping.targets) == 0
+    ping_failed = (not ping_unmeasured) and (ping.avg_rtt_ms is None)
 
-    # Effective speed estimate if speedtest was skipped (ping-only mode)
+    # Effective speed/stability estimate if unmeasured
     eff_spd_s = spd_s if not speed_unmeasured else max(35, min(75, sig_s))
+    eff_stb_s = stb_s if not ping_unmeasured else max(40, min(75, sig_s))
+    ping_disp = f"{rtt} ms" if rtt is not None else ("未計測 (宛先未指定)" if ping_unmeasured else "未計測")
 
     cases: List[UseCaseEvaluation] = []
 
     # 1. Web browsing / SNS / Email
-    s_web = _clamp(sig_s * 0.25 + stb_s * 0.30 + eff_spd_s * 0.25 + sec_s * 0.20)
+    s_web = _clamp(sig_s * 0.25 + eff_stb_s * 0.30 + eff_spd_s * 0.25 + sec_s * 0.20)
     cap_web: Optional[str] = None
-    if ping.avg_rtt_ms is None or loss >= 30.0:
+    if ping_failed or loss >= 30.0:
         cap_web = "× 不向き"
     elif down is not None and down < 1.5:
         cap_web = "× 不向き"
@@ -346,14 +350,14 @@ def evaluate_use_cases(
             rating=r_web,
             score=s_web,
             summary=web_summary,
-            details=f"下り {down if down is not None else '未計測'} Mbps / Ping {rtt if rtt is not None else '未計測'} ms / パケットロス {loss}%",
+            details=f"下り {down if down is not None else '未計測'} Mbps / Ping {ping_disp} / パケットロス {loss}%",
         )
     )
 
     # 2. High-res Video Streaming (4K / FHD)
-    s_vid = _clamp(sig_s * 0.25 + stb_s * 0.20 + eff_spd_s * 0.50 + sec_s * 0.05)
+    s_vid = _clamp(sig_s * 0.25 + eff_stb_s * 0.20 + eff_spd_s * 0.50 + sec_s * 0.05)
     cap_vid: Optional[str] = None
-    if ping.avg_rtt_ms is None or (down is not None and down < 3.0) or loss >= 10.0:
+    if ping_failed or (down is not None and down < 3.0) or loss >= 10.0:
         cap_vid = "× 不向き"
     elif (down is not None and down < 18.0) or loss > 2.0 or speed_unmeasured:
         cap_vid = "△ 注意"
@@ -384,20 +388,22 @@ def evaluate_use_cases(
     )
 
     # 3. Video Conferencing (Zoom / Teams / Meet)
-    s_conf = _clamp(sig_s * 0.25 + stb_s * 0.40 + eff_spd_s * 0.25 + sec_s * 0.10)
+    s_conf = _clamp(sig_s * 0.25 + eff_stb_s * 0.40 + eff_spd_s * 0.25 + sec_s * 0.10)
     cap_conf: Optional[str] = None
-    if ping.avg_rtt_ms is None or loss > 2.0 or (rtt is not None and rtt > 150) or (up is not None and up < 1.5) or (down is not None and down < 2.0):
+    if ping_failed or loss > 2.0 or (rtt is not None and rtt > 150) or (up is not None and up < 1.5) or (down is not None and down < 2.0):
         cap_conf = "× 不向き"
-    elif loss > 0.5 or jitter > 18.0 or (rtt is not None and rtt > 75) or (up is not None and up < 4.0) or (wifi.rssi_dbm is not None and wifi.rssi_dbm < -72):
+    elif ping_unmeasured or loss > 0.5 or jitter > 18.0 or (rtt is not None and rtt > 75) or (up is not None and up < 4.0) or (wifi.rssi_dbm is not None and wifi.rssi_dbm < -72):
         cap_conf = "△ 注意"
     r_conf = _rating_from_score(s_conf, cap_conf)
     s_conf = _cap_score_for_rating(s_conf, r_conf)
-    if r_conf in {"◎ 最適", "○ 快適"}:
-        conf_summary = "遅延・ロスが少なく、カメラONのWeb会議や画面共有も安定"
-    elif r_conf == "△ 注意":
-        conf_summary = "音声途切れや画質低下の恐れあり（カメラOFFやルーター接近を推奨）"
-    else:
+    if r_conf == "× 不向き":
         conf_summary = "パケットロス・遅延または上り速度不足によりWeb会議は不安定"
+    elif ping_unmeasured:
+        conf_summary = "Ping未計測のため暫定判定（安定性評価にはPing宛先の指定を推奨）"
+    elif r_conf in {"◎ 最適", "○ 快適"}:
+        conf_summary = "遅延・ロスが少なく、カメラONのWeb会議や画面共有も安定"
+    else:
+        conf_summary = "音声途切れや画質低下の恐れあり（カメラOFFやルーター接近を推奨）"
     cases.append(
         UseCaseEvaluation(
             id="video_conference",
@@ -406,32 +412,34 @@ def evaluate_use_cases(
             rating=r_conf,
             score=s_conf,
             summary=conf_summary,
-            details=f"Ping {rtt if rtt is not None else '未計測'} ms / ジッター {jitter} ms / 上り {up if up is not None else '未計測'} Mbps / ロス {loss}%",
+            details=f"Ping {ping_disp} / ジッター {jitter} ms / 上り {up if up is not None else '未計測'} Mbps / ロス {loss}%",
         )
     )
 
     # 4. Online Gaming (FPS / Competitive)
-    s_game = _clamp(sig_s * 0.20 + stb_s * 0.60 + eff_spd_s * 0.15 + sec_s * 0.05)
+    s_game = _clamp(sig_s * 0.20 + eff_stb_s * 0.60 + eff_spd_s * 0.15 + sec_s * 0.05)
     cap_game: Optional[str] = None
-    if ping.avg_rtt_ms is None or loss > 1.5 or jitter > 22.0 or (rtt is not None and rtt > 90):
+    if ping_failed or loss > 1.5 or jitter > 22.0 or (rtt is not None and rtt > 90):
         cap_game = "× 不向き"
-    elif loss > 0.0 or jitter > 10.0 or (rtt is not None and rtt > 45) or (wifi.band == "2.4GHz" and rtt is not None and rtt > 25):
+    elif ping_unmeasured or loss > 0.0 or jitter > 10.0 or (rtt is not None and rtt > 45) or (wifi.band == "2.4GHz" and rtt is not None and rtt > 25):
         cap_game = "△ 注意"
     elif wifi.band == "2.4GHz":
         cap_game = "○ 快適"
     r_game = _rating_from_score(s_game, cap_game)
     s_game = _cap_score_for_rating(s_game, r_game)
-    if r_game == "◎ 最適":
+    if r_game == "× 不向き":
+        game_summary = "遅延・ジッター・パケットロスが大きく対戦ゲームには不向き"
+    elif ping_unmeasured:
+        game_summary = "Ping未計測のため暫定判定（ゲーム適性の判定にはPing宛先の指定を推奨）"
+    elif r_game == "◎ 最適":
         game_summary = "低Ping・低ジッター・ロス0%でFPSや対人ゲームにも十分対応可能"
     elif r_game == "○ 快適":
         if wifi.band == "2.4GHz":
             game_summary = "概ね快適（5GHz/6GHz帯または有線接続に切り替えるとさらに安定）"
         else:
             game_summary = "低遅延で快適ですが、電波強度がやや弱いためルーターに近づくとさらに安定"
-    elif r_game == "△ 注意":
-        game_summary = "ラグスパイクや応答遅延が発生する可能性（RPG向け、FPSは注意）"
     else:
-        game_summary = "遅延・ジッター・パケットロスが大きく対戦ゲームには不向き"
+        game_summary = "ラグスパイクや応答遅延が発生する可能性（RPG向け、FPSは注意）"
     cases.append(
         UseCaseEvaluation(
             id="online_gaming",
@@ -440,14 +448,14 @@ def evaluate_use_cases(
             rating=r_game,
             score=s_game,
             summary=game_summary,
-            details=f"Ping {rtt if rtt is not None else '未計測'} ms / ジッター {jitter} ms / ロス {loss}% / 帯域 {wifi.band}",
+            details=f"Ping {ping_disp} / ジッター {jitter} ms / ロス {loss}% / 帯域 {wifi.band}",
         )
     )
 
     # 5. Large File Transfers / Cloud Sync / Dev Work
-    s_cloud = _clamp(sig_s * 0.20 + stb_s * 0.20 + eff_spd_s * 0.50 + sec_s * 0.10)
+    s_cloud = _clamp(sig_s * 0.20 + eff_stb_s * 0.20 + eff_spd_s * 0.50 + sec_s * 0.10)
     cap_cloud: Optional[str] = None
-    if ping.avg_rtt_ms is None or (down is not None and down < 5.0) or (up is not None and up < 3.0) or loss >= 10.0:
+    if ping_failed or (down is not None and down < 5.0) or (up is not None and up < 3.0) or loss >= 10.0:
         cap_cloud = "× 不向き"
     elif (down is not None and down < 25.0) or (up is not None and up < 12.0) or speed_unmeasured:
         cap_cloud = "△ 注意"
@@ -474,7 +482,7 @@ def evaluate_use_cases(
     )
 
     # 6. Confidential Work / Banking / Payments
-    s_bank = _clamp(sec_s * 0.65 + stb_s * 0.20 + sig_s * 0.15)
+    s_bank = _clamp(sec_s * 0.65 + eff_stb_s * 0.20 + sig_s * 0.15)
     cap_bank: Optional[str] = None
     if not security.is_encrypted or not wifi.connected:
         cap_bank = "× 不向き"
@@ -527,8 +535,13 @@ def build_diagnostic_report(
         "security": sec_s,
     }
 
-    if speed.skipped:
+    ping_unmeasured = len(ping.targets) == 0
+    if speed.skipped and ping_unmeasured:
+        overall = _clamp(sig_s * 0.55 + sec_s * 0.45)
+    elif speed.skipped:
         overall = _clamp(sig_s * 0.30 + stb_s * 0.40 + sec_s * 0.30)
+    elif ping_unmeasured:
+        overall = _clamp(sig_s * 0.30 + spd_s * 0.40 + sec_s * 0.30)
     else:
         overall = _clamp(sig_s * 0.22 + stb_s * 0.30 + spd_s * 0.28 + sec_s * 0.20)
 

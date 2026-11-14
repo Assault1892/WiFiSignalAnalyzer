@@ -16,7 +16,6 @@ from urllib.parse import urlparse
 
 from core.models import DiagnosticReport, RealtimeEvent, RealtimeSample
 from core.network_tester import (
-    DEFAULT_PING_TARGETS,
     PING_TARGET_LABELS,
     check_captive_portal,
 )
@@ -95,7 +94,7 @@ class _WebState:
             "診断完了" if initial_report else "待機中: 「診断を実行」を押すと測定を開始します"
         )
         self.mode: str = initial_report.mode if initial_report else "light"
-        self.targets: Tuple[str, ...] = initial_targets or DEFAULT_PING_TARGETS
+        self.targets: Tuple[str, ...] = tuple(initial_targets) if initial_targets else ()
         self.error: Optional[str] = None
         self.report: Optional[DiagnosticReport] = initial_report
         self.realtime_samples: List[RealtimeSample] = []
@@ -128,7 +127,7 @@ class _WebState:
             self.running = True
             self.realtime_active = mode == "realtime"
             self.mode = mode
-            if targets:
+            if targets is not None:
                 self.targets = targets
             run_targets = self.targets
             self.total_steps = 4
@@ -277,7 +276,7 @@ class _WebState:
                 "status_message": self.status_message,
                 "mode": self.mode,
                 "targets": [
-                    {"target": t, "label": PING_TARGET_LABELS.get(t, "カスタムターゲット")}
+                    {"target": t, "label": PING_TARGET_LABELS.get(t, "")}
                     for t in self.targets
                 ],
                 "error": self.error,
@@ -540,7 +539,7 @@ _HTML_PAGE = r"""<!DOCTYPE html>
   </div>
   <div class="progress-bar-wrap" style="margin-top:8px; padding:9px 16px; gap:10px;">
     <label for="targetsInput" class="muted" style="white-space:nowrap;">Ping宛先 (カンマ区切り):</label>
-    <input id="targetsInput" type="text" value="1.1.1.1, 8.8.8.8, 9.9.9.9, google.co.jp"
+    <input id="targetsInput" type="text" value="" placeholder="測定先のIPまたはホスト名を入力 (カンマ区切り・未入力時はPing測定をスキップ)"
       style="flex:1; min-width:220px; border-radius:8px; border:1px solid var(--border); background:var(--panel-2); color:var(--text); padding:6px 10px; font-size:0.85rem;">
   </div>
 
@@ -757,18 +756,22 @@ function renderStandby(targetItems, isMeasuring = false) {
     </div>
   `).join('');
 
-  const items = (targetItems && targetItems.length) ? targetItems : [
-    {target: '1.1.1.1', label: 'Cloudflare DNS (Anycast)'},
-    {target: '8.8.8.8', label: 'Google Public DNS (Anycast)'},
-    {target: '9.9.9.9', label: 'Quad9 DNS (Anycast)'},
-    {target: 'google.co.jp', label: 'Google JP (DNS解決+国内Web)'},
-  ];
-  document.getElementById('pingTableBody').innerHTML = items.map(it => `
-    <tr>
-      <td>${escapeHtml(it.target)} <span class="muted">(${escapeHtml(it.label || 'カスタム')})</span></td>
-      <td>-</td><td>-</td><td>-</td><td>${badgeLabel}</td><td>-</td>
-    </tr>
-  `).join('');
+  const items = Array.isArray(targetItems) ? targetItems : [];
+  if (items.length === 0) {
+    const emptyMsg = isMeasuring
+      ? 'Ping宛先が未指定のため、この診断ではPing測定をスキップします。'
+      : 'Ping宛先が未指定です。必要に応じて上の入力欄へIPまたはホスト名を指定してください（未指定時はPing測定をスキップ）。';
+    document.getElementById('pingTableBody').innerHTML = `
+      <tr><td colspan="6" class="muted">${escapeHtml(emptyMsg)}</td></tr>
+    `;
+  } else {
+    document.getElementById('pingTableBody').innerHTML = items.map(it => `
+      <tr>
+        <td>${escapeHtml(it.target)}${it.label ? ` <span class="muted">(${escapeHtml(it.label)})</span>` : ''}</td>
+        <td>-</td><td>-</td><td>-</td><td>${badgeLabel}</td><td>-</td>
+      </tr>
+    `).join('');
+  }
   document.getElementById('secSummary').textContent = isMeasuring ? 'セキュリティ診断中...' : '診断待機中';
   document.getElementById('secFindings').innerHTML = isMeasuring
     ? '<li>診断を実行中です...</li>'
@@ -1017,6 +1020,7 @@ function renderReport(r) {
   document.getElementById('wifiIdentity').textContent =
     w.connected ? `${w.ssid || 'Wi-Fi接続中'} [${w.interface || 'iface'} / ${w.band}]` : 'Wi-Fi未接続';
 
+  const pingSkipped = !p.targets || p.targets.length === 0;
   const pillars = [
     {
       title: '信号品質 (RF)',
@@ -1031,7 +1035,13 @@ function renderReport(r) {
     {
       title: '安定性 (Ping)',
       score: r.pillar_scores.stability,
-      rows: [
+      scoreLabel: pingSkipped ? 'スキップ' : `${r.pillar_scores.stability}点`,
+      rows: pingSkipped ? [
+        ['状態', 'スキップ (宛先未指定)'],
+        ['平均RTT', '-'],
+        ['平均ジッター', '-'],
+        ['パケットロス', '-'],
+      ] : [
         ['平均RTT', p.avg_rtt_ms !== null ? `${p.avg_rtt_ms} ms` : '取得不可'],
         ['最大RTT', p.max_rtt_ms !== null ? `${p.max_rtt_ms} ms` : '-'],
         ['平均ジッター', p.avg_jitter_ms !== null ? `${p.avg_jitter_ms} ms` : '-'],
@@ -1085,16 +1095,18 @@ function renderReport(r) {
     </div>
   `).join('');
 
-  document.getElementById('pingTableBody').innerHTML = p.targets.map(t => `
-    <tr>
-      <td>${escapeHtml(t.target)}${t.label ? ` <span class="muted">(${escapeHtml(t.label)})</span>` : ''}</td>
-      <td>${escapeHtml(t.method)}</td>
-      <td>${t.transmitted}/${t.received}</td>
-      <td>${t.packet_loss_pct}%</td>
-      <td>${t.avg_ms !== null ? t.avg_ms + ' ms' : escapeHtml(t.error || '応答なし')}</td>
-      <td>${t.jitter_ms !== null ? t.jitter_ms + ' ms' : '-'}</td>
-    </tr>
-  `).join('');
+  document.getElementById('pingTableBody').innerHTML = pingSkipped
+    ? '<tr><td colspan="6" class="muted">Ping宛先が未指定のためPing測定はスキップされました。安定性を測定したい場合は上の入力欄にPing先を入力してください。</td></tr>'
+    : p.targets.map(t => `
+      <tr>
+        <td>${escapeHtml(t.target)}${t.label ? ` <span class="muted">(${escapeHtml(t.label)})</span>` : ''}</td>
+        <td>${escapeHtml(t.method)}</td>
+        <td>${t.transmitted}/${t.received}</td>
+        <td>${t.packet_loss_pct}%</td>
+        <td>${t.avg_ms !== null ? t.avg_ms + ' ms' : escapeHtml(t.error || '応答なし')}</td>
+        <td>${t.jitter_ms !== null ? t.jitter_ms + ' ms' : '-'}</td>
+      </tr>
+    `).join('');
 
   document.getElementById('secSummary').textContent =
     `認証: ${sec.auth_type} / リスク: ${sec.risk_level} / キャプティブポータル: ${sec.captive_portal_detected ? '検出' : '未検出'}`;
@@ -1253,9 +1265,7 @@ def _make_handler(state: _WebState):
                             mode = data["mode"]
                         raw_t = data.get("targets")
                         if isinstance(raw_t, list):
-                            cleaned = tuple(str(x).strip() for x in raw_t if str(x).strip())
-                            if cleaned:
-                                req_targets = cleaned
+                            req_targets = tuple(str(x).strip() for x in raw_t if str(x).strip())
                     except Exception:
                         pass
                 started = state.start_run(mode, targets=req_targets)

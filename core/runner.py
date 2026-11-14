@@ -22,7 +22,6 @@ from .models import (
     WiFiInfo,
 )
 from .network_tester import (
-    DEFAULT_PING_TARGETS,
     check_captive_portal,
     run_cloudflare_speedtest,
     run_ping_tests,
@@ -53,7 +52,7 @@ def run_diagnostics(
 
     _emit(3, "3/4 Ping RTT・ジッター・パケットロスを測定中...")
     ping = run_ping_tests(
-        targets=targets or DEFAULT_PING_TARGETS,
+        targets=targets or (),
         mode=mode,
         progress_cb=lambda m: _emit(3, f"3/4 {m}"),
     )
@@ -314,7 +313,7 @@ def run_realtime_tick(
         wifi.finalize()
 
     ping = run_realtime_ping_tick(
-        targets=targets or DEFAULT_PING_TARGETS,
+        targets=targets or (),
         count_per_target=2,
         interval=0.2,
     )
@@ -474,24 +473,29 @@ def format_report_markdown(report: DiagnosticReport) -> str:
         f"- **信号スコア**: {report.pillar_scores['signal']} / 100",
         "",
         "## 2. 安定性 (Ping RTT・パケットロス)",
-        f"- **平均RTT**: {f'{p.avg_rtt_ms} ms' if p.avg_rtt_ms is not None else '取得不可'} (最大: {f'{p.max_rtt_ms} ms' if p.max_rtt_ms is not None else '-'})",
-        f"- **平均ジッター**: {f'{p.avg_jitter_ms} ms' if p.avg_jitter_ms is not None else '取得不可'}",
-        f"- **パケットロス率**: {p.total_loss_pct}%",
-        f"- **安定性スコア**: {report.pillar_scores['stability']} / 100",
-        "",
-        "| ターゲット | 方式 | 送信/受信 | ロス率 | 最小 / 平均 / 最大 (ms) | ジッター |",
-        "| --- | --- | --- | --- | --- | --- |",
     ]
-    for t in p.targets:
-        rtt_col = (
-            f"{t.min_ms} / {t.avg_ms} / {t.max_ms}"
-            if t.avg_ms is not None
-            else (t.error or "応答なし")
-        )
-        target_disp = f"{t.target} ({t.label})" if t.label else t.target
-        lines.append(
-            f"| {target_disp} | {t.method} | {t.transmitted}/{t.received} | {t.packet_loss_pct}% | {rtt_col} | {f'{t.jitter_ms} ms' if t.jitter_ms is not None else '-'} |"
-        )
+    if not p.targets:
+        lines.append("- **状態**: スキップ (Ping宛先未指定)")
+    else:
+        lines.extend([
+            f"- **平均RTT**: {f'{p.avg_rtt_ms} ms' if p.avg_rtt_ms is not None else '取得不可'} (最大: {f'{p.max_rtt_ms} ms' if p.max_rtt_ms is not None else '-'})",
+            f"- **平均ジッター**: {f'{p.avg_jitter_ms} ms' if p.avg_jitter_ms is not None else '取得不可'}",
+            f"- **パケットロス率**: {p.total_loss_pct}%",
+            f"- **安定性スコア**: {report.pillar_scores['stability']} / 100",
+            "",
+            "| ターゲット | 方式 | 送信/受信 | ロス率 | 最小 / 平均 / 最大 (ms) | ジッター |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ])
+        for t in p.targets:
+            rtt_col = (
+                f"{t.min_ms} / {t.avg_ms} / {t.max_ms}"
+                if t.avg_ms is not None
+                else (t.error or "応答なし")
+            )
+            target_disp = f"{t.target} ({t.label})" if t.label else t.target
+            lines.append(
+                f"| {target_disp} | {t.method} | {t.transmitted}/{t.received} | {t.packet_loss_pct}% | {rtt_col} | {f'{t.jitter_ms} ms' if t.jitter_ms is not None else '-'} |"
+            )
 
     lines.extend(["", f"## 3. 通信速度 ({sp.engine})"])
     if sp.skipped:
@@ -570,17 +574,20 @@ def format_report_cli(report: DiagnosticReport) -> str:
     sig_line = f"{report.pillar_scores['signal']:3d}/100点 | {rssi_str} ({snr_str}) / {w.band} / {tx_str}"
 
     # 2. Ping summary
-    rtt_str = f"{p.avg_rtt_ms} ms" if p.avg_rtt_ms is not None else "応答なし"
-    jit_str = f"{p.avg_jitter_ms} ms" if p.avg_jitter_ms is not None else "-"
-    per_target = ", ".join(
-        f"{t.target}: {f'{t.avg_ms}ms' if t.avg_ms is not None else '×'}"
-        + (f"({t.packet_loss_pct}%ロス)" if t.packet_loss_pct > 0 else "")
-        for t in p.targets
-    )
-    ping_line = (
-        f"{report.pillar_scores['stability']:3d}/100点 | "
-        f"平均 {rtt_str} / ジッター {jit_str} / ロス {p.total_loss_pct}% ({per_target})"
-    )
+    if not p.targets:
+        ping_line = " スキップ | Ping宛先未指定"
+    else:
+        rtt_str = f"{p.avg_rtt_ms} ms" if p.avg_rtt_ms is not None else "応答なし"
+        jit_str = f"{p.avg_jitter_ms} ms" if p.avg_jitter_ms is not None else "-"
+        per_target = ", ".join(
+            f"{t.target}: {f'{t.avg_ms}ms' if t.avg_ms is not None else '×'}"
+            + (f"({t.packet_loss_pct}%ロス)" if t.packet_loss_pct > 0 else "")
+            for t in p.targets
+        )
+        ping_line = (
+            f"{report.pillar_scores['stability']:3d}/100点 | "
+            f"平均 {rtt_str} / ジッター {jit_str} / ロス {p.total_loss_pct}% ({per_target})"
+        )
 
     # 3. Speed summary
     if sp.skipped:

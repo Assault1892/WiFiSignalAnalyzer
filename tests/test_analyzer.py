@@ -30,6 +30,8 @@ from core.network_tester import (
     PING_TARGET_LABELS,
     parse_cloudflare_speed_cli_json,
     parse_ping_output,
+    run_ping_tests,
+    run_realtime_ping_tick,
 )
 from core.runner import (
     append_realtime_sample_csv,
@@ -426,6 +428,40 @@ class TestEvaluatorAndUseCases(unittest.TestCase):
         self.assertNotIn("| --- |", cli_text)
         self.assertNotIn("**", cli_text)
 
+    def test_no_preset_ping_targets_skipped(self) -> None:
+        self.assertEqual(DEFAULT_PING_TARGETS, ())
+        self.assertEqual(PING_TARGET_LABELS, {})
+
+        msgs = []
+        with mock.patch("core.network_tester.run_ping_target") as mock_ping:
+            ping_sum = run_ping_tests(progress_cb=msgs.append)
+            rt_sum = run_realtime_ping_tick()
+            self.assertFalse(mock_ping.called)
+
+        self.assertEqual(ping_sum.targets, [])
+        self.assertIsNone(ping_sum.avg_rtt_ms)
+        self.assertEqual(rt_sum.targets, [])
+        self.assertTrue(any("スキップ" in m for m in msgs))
+
+        wifi = WiFiInfo(
+            connected=True,
+            interface="en0",
+            ssid="Home_5G",
+            rssi_dbm=-52,
+            noise_dbm=-92,
+            band="5GHz",
+            security_raw="WPA3 Personal",
+        ).finalize()
+        speed = SpeedTestResult(skipped=False, download_mbps=150.0, upload_mbps=60.0)
+        report = build_diagnostic_report(wifi, ping_sum, speed, mode="light")
+        self.assertGreaterEqual(report.overall_score, 80)
+        by_id = {u.id: u for u in report.use_cases}
+        self.assertEqual(by_id["online_gaming"].rating, "△ 注意")
+        self.assertEqual(by_id["video_conference"].rating, "△ 注意")
+        self.assertIn("Ping未計測", by_id["online_gaming"].summary)
+        self.assertIn("スキップ | Ping宛先未指定", format_report_cli(report))
+        self.assertIn("スキップ (Ping宛先未指定)", format_report_markdown(report))
+
     def test_detect_realtime_anomalies(self) -> None:
         base_wifi = WiFiInfo(
             connected=True,
@@ -632,12 +668,15 @@ class TestWebDashboardServer(unittest.TestCase):
         self.assertFalse(standby_state.running)
         self.assertIsNone(standby_state.report)
         snap = standby_state.snapshot()
-        self.assertEqual(
-            [t["target"] for t in snap["targets"]],
-            ["1.1.1.1", "8.8.8.8", "9.9.9.9", "google.co.jp"],
-        )
-        self.assertEqual(DEFAULT_PING_TARGETS, ("1.1.1.1", "8.8.8.8", "9.9.9.9", "google.co.jp"))
-        self.assertIn("8.8.8.8", PING_TARGET_LABELS)
+        self.assertEqual(snap["targets"], [])
+        self.assertEqual(DEFAULT_PING_TARGETS, ())
+        self.assertEqual(PING_TARGET_LABELS, {})
+
+        with mock.patch("gui.web_app.threading.Thread"):
+            standby_with_t = _WebState(initial_targets=("192.168.1.1",))
+            self.assertEqual([t["target"] for t in standby_with_t.snapshot()["targets"]], ["192.168.1.1"])
+            standby_with_t.start_run("light", targets=())
+            self.assertEqual(standby_with_t.targets, ())
 
         report = self._sample_report()
         state = _WebState(initial_report=report)

@@ -22,15 +22,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .models import PingSummary, PingTargetResult, SpeedTestResult
 
-DEFAULT_PING_TARGETS: Tuple[str, ...] = ("1.1.1.1", "8.8.8.8", "9.9.9.9", "google.co.jp")
-PING_TARGET_LABELS: Dict[str, str] = {
-    "1.1.1.1": "Cloudflare DNS (Anycast)",
-    "8.8.8.8": "Google Public DNS (Anycast)",
-    "9.9.9.9": "Quad9 DNS (Anycast)",
-    "google.co.jp": "Google JP (DNS解決+国内Web)",
-    "208.67.222.222": "Cisco OpenDNS (Anycast)",
-    "cloudflare.com": "Cloudflare Web (DNS解決+CDN)",
-}
+DEFAULT_PING_TARGETS: Tuple[str, ...] = ()
+PING_TARGET_LABELS: Dict[str, str] = {}
 USER_AGENT = "Mozilla/5.0 WiFiSignalAnalyzer/1.0"
 
 
@@ -205,6 +198,15 @@ def run_ping_target(target: str, count: int = 5, interval: float = 0.25) -> Ping
 
 def _aggregate_ping_results(results: List[PingTargetResult]) -> PingSummary:
     """Aggregate per-target ping measurements into a PingSummary."""
+    if not results:
+        return PingSummary(
+            targets=[],
+            avg_rtt_ms=None,
+            max_rtt_ms=None,
+            avg_jitter_ms=None,
+            total_loss_pct=0.0,
+        )
+
     avgs = [r.avg_ms for r in results if r.avg_ms is not None]
     maxs = [r.max_ms for r in results if r.max_ms is not None]
     jitters = [r.jitter_ms for r in results if r.jitter_ms is not None]
@@ -262,8 +264,13 @@ def run_ping_tests(
     mode: str = "light",
     progress_cb: Optional[Callable[[str], None]] = None,
 ) -> PingSummary:
-    """Measure RTT and packet loss concurrently across multiple low-load targets."""
-    clean_targets = tuple(t.strip() for t in targets if t and t.strip()) or DEFAULT_PING_TARGETS
+    """Measure RTT and packet loss concurrently across user-specified targets."""
+    clean_targets = tuple(t.strip() for t in targets if t and t.strip())
+    if not clean_targets:
+        if progress_cb:
+            progress_cb("Ping宛先が未指定のためPing測定はスキップされました")
+        return _aggregate_ping_results([])
+
     count = 6 if mode == "standard" else 4
     interval = 0.25
 
@@ -278,8 +285,10 @@ def run_realtime_ping_tick(
     count_per_target: int = 2,
     interval: float = 0.2,
 ) -> PingSummary:
-    """Run one lightweight concurrent Ping burst across targets for real-time monitoring."""
-    clean_targets = tuple(t.strip() for t in targets if t and t.strip()) or DEFAULT_PING_TARGETS
+    """Run one lightweight concurrent Ping burst across user-specified targets."""
+    clean_targets = tuple(t.strip() for t in targets if t and t.strip())
+    if not clean_targets:
+        return _aggregate_ping_results([])
     return _run_concurrent_pings(
         clean_targets,
         count=max(1, count_per_target),

@@ -53,7 +53,7 @@ def _run_cli_realtime(
     jitter_cnt = 0
 
     if not output_json:
-        target_disp = ", ".join(targets) if targets else "1.1.1.1, 8.8.8.8, 9.9.9.9, google.co.jp"
+        target_disp = ", ".join(targets) if targets else "未指定 (Ping測定スキップ)"
         print(f"リアルタイム連続監視を開始しました (Ping宛先: {target_disp} / 停止: Ctrl+C)")
         print(f"CSV記録先: {csv_path}")
 
@@ -195,7 +195,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--targets",
         type=str,
         default=None,
-        help="Ping測定先 (カンマ区切り; 既定: 1.1.1.1,8.8.8.8,9.9.9.9,google.co.jp)",
+        help="Ping測定先 (カンマ区切り; 既定: 未指定でPing測定をスキップ)",
     )
     parser.add_argument(
         "--port",

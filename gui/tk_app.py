@@ -113,7 +113,7 @@ class WiFiAnalyzerTkApp:
         self._rt_events: List[RealtimeEvent] = []
         self._rt_tick_count: int = 0
         self._realtime_csv_path: Optional[str] = None
-        self._targets = initial_targets
+        self._targets: Tuple[str, ...] = tuple(initial_targets) if initial_targets else ()
         self._web_server = None
         self._web_url: Optional[str] = None
         self._web_state = None
@@ -122,6 +122,7 @@ class WiFiAnalyzerTkApp:
         self._mode_key_to_label = {key: label for label, key in _MODE_LABELS}
         initial_label = self._mode_key_to_label.get(initial_mode, _MODE_LABELS[0][0])
         self.mode_var = tk.StringVar(value=initial_label)
+        self.targets_var = tk.StringVar(value=", ".join(self._targets))
         self.status_var = tk.StringVar(value="待機中: 「診断を実行」を押してください")
         self.progress_var = tk.DoubleVar(value=0.0)
 
@@ -202,6 +203,20 @@ class WiFiAnalyzerTkApp:
             mode="determinate",
         )
         self.progress_bar.pack(side=tk.RIGHT, padx=12, pady=7)
+
+        # Ping target input strip (empty by default; no preset targets)
+        target_frame = tk.Frame(self.root, bg=BG_CARD, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        target_frame.pack(fill=tk.X, padx=14, pady=(0, 8))
+        tk.Label(
+            target_frame,
+            text="Ping宛先 (カンマ区切り・未入力時はスキップ):",
+            font=self._font(9),
+            bg=BG_CARD,
+            fg=FG_MUTED,
+            anchor="w",
+        ).pack(side=tk.LEFT, padx=(12, 8), pady=6)
+        self.targets_entry = ttk.Entry(target_frame, textvariable=self.targets_var)
+        self.targets_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12), pady=6)
 
         # Scrollable body canvas
         body_wrap = tk.Frame(self.root, bg=BG_ROOT)
@@ -699,6 +714,7 @@ class WiFiAnalyzerTkApp:
         if self._running:
             return
         mode_key = self._mode_label_to_key.get(self.mode_var.get(), "light")
+        self._targets = tuple(part.strip() for part in self.targets_var.get().split(",") if part.strip())
         init_msg = (
             "リアルタイム連続監視を開始しています..."
             if mode_key == "realtime"
@@ -709,6 +725,7 @@ class WiFiAnalyzerTkApp:
         self._running = True
         self.run_btn.configure(state="disabled")
         self.mode_combo.configure(state="disabled")
+        self.targets_entry.configure(state="disabled")
         self.stop_btn.configure(state="normal" if mode_key == "realtime" else "disabled")
         self.progress_var.set(5.0)
         self.status_var.set(init_msg)
@@ -847,6 +864,7 @@ class WiFiAnalyzerTkApp:
                     self._running = False
                     self.run_btn.configure(state="normal")
                     self.mode_combo.configure(state="readonly")
+                    self.targets_entry.configure(state="normal")
                     self.stop_btn.configure(state="disabled")
                     self.save_btn.configure(state="normal")
                     self.progress_var.set(100.0)
@@ -893,6 +911,7 @@ class WiFiAnalyzerTkApp:
                     self._running = False
                     self.run_btn.configure(state="normal")
                     self.mode_combo.configure(state="readonly")
+                    self.targets_entry.configure(state="normal")
                     self.stop_btn.configure(state="disabled")
                     if "エラー" not in self.status_var.get():
                         csv_note = f" / CSV: {os.path.basename(self._realtime_csv_path)}" if self._realtime_csv_path else ""
@@ -901,6 +920,7 @@ class WiFiAnalyzerTkApp:
                     self._running = False
                     self.run_btn.configure(state="normal")
                     self.mode_combo.configure(state="readonly")
+                    self.targets_entry.configure(state="normal")
                     self.stop_btn.configure(state="disabled")
                     self.status_var.set(_tk_safe(f"エラー: {payload}"))
                     messagebox.showerror("診断エラー", str(payload))
@@ -936,9 +956,16 @@ class WiFiAnalyzerTkApp:
                 ],
             ),
             "stability": (
-                f"{r.pillar_scores['stability']}点",
+                "スキップ" if not p.targets else f"{r.pillar_scores['stability']}点",
                 r.pillar_scores["stability"],
                 [
+                    ("状態", "スキップ (宛先未指定)"),
+                    ("平均RTT", "-"),
+                    ("平均ジッター", "-"),
+                    ("パケットロス", "-"),
+                ]
+                if not p.targets
+                else [
                     ("平均RTT", f"{p.avg_rtt_ms} ms" if p.avg_rtt_ms is not None else "取得不可"),
                     ("最大RTT", f"{p.max_rtt_ms} ms" if p.max_rtt_ms is not None else "-"),
                     ("平均ジッター", f"{p.avg_jitter_ms} ms" if p.avg_jitter_ms is not None else "-"),
@@ -991,18 +1018,24 @@ class WiFiAnalyzerTkApp:
             card_w["details"].configure(text=_tk_safe(uc.details))
 
         # Ping details box
-        ping_lines = []
-        for t in p.targets:
-            if t.avg_ms is not None:
-                ping_lines.append(
-                    f"{t.target:<14} [{t.method}] 送/受 {t.transmitted}/{t.received}  ロス {t.packet_loss_pct}%  "
-                    f"最小/平均/最大 {t.min_ms}/{t.avg_ms}/{t.max_ms} ms  ジッター {t.jitter_ms} ms"
-                )
-            else:
-                ping_lines.append(
-                    f"{t.target:<14} [{t.method}] 送/受 {t.transmitted}/{t.received}  ロス {t.packet_loss_pct}%  ({t.error or '応答なし'})"
-                )
-        self._set_textbox(self.ping_text, "\n".join(ping_lines))
+        if not p.targets:
+            self._set_textbox(
+                self.ping_text,
+                "Ping宛先が未指定のためPing測定はスキップされました。\n安定性を測定したい場合は上の入力欄にPing先を入力してください。",
+            )
+        else:
+            ping_lines = []
+            for t in p.targets:
+                if t.avg_ms is not None:
+                    ping_lines.append(
+                        f"{t.target:<14} [{t.method}] 送/受 {t.transmitted}/{t.received}  ロス {t.packet_loss_pct}%  "
+                        f"最小/平均/最大 {t.min_ms}/{t.avg_ms}/{t.max_ms} ms  ジッター {t.jitter_ms} ms"
+                    )
+                else:
+                    ping_lines.append(
+                        f"{t.target:<14} [{t.method}] 送/受 {t.transmitted}/{t.received}  ロス {t.packet_loss_pct}%  ({t.error or '応答なし'})"
+                    )
+            self._set_textbox(self.ping_text, "\n".join(ping_lines))
 
         # Security findings box
         sec_lines = [
