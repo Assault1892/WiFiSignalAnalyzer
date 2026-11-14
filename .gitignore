@@ -1,0 +1,18 @@
+# Byte-compiled / Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# macOS metadata
+.DS_Store
+
+# Auto-downloaded or locally compiled binaries
+bin/
+
+# Generated diagnostic and realtime CSV reports
+reports/
